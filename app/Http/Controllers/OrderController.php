@@ -7,6 +7,7 @@ use App\Models\Cart;
 use App\Models\Order;
 use App\Models\Shipping;
 use App\User;
+use Illuminate\Support\Facades\Session;
 use PDF;
 use Notification;
 use Helper;
@@ -42,7 +43,7 @@ class OrderController extends Controller
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\Response
      */
-    public function store(Request $request)
+    public function checkout(Request $request)
     {
         $this->validate($request,[
             'first_name'=>'string|required',
@@ -52,41 +53,15 @@ class OrderController extends Controller
             'coupon'=>'nullable|numeric',
             'phone'=>'numeric|required',
             'post_code'=>'string|nullable',
-            'email'=>'string|required'
+            'email'=>'string|required',
+            'shipping' => 'required',
+            'payment_method' => 'required'
         ]);
-        // return $request->all();
 
         if(empty(Cart::where('user_id',auth()->user()->id)->where('order_id',null)->first())){
             request()->session()->flash('error','Cart is Empty !');
             return back();
         }
-        // $cart=Cart::get();
-        // // return $cart;
-        // $cart_index='ORD-'.strtoupper(uniqid());
-        // $sub_total=0;
-        // foreach($cart as $cart_item){
-        //     $sub_total+=$cart_item['amount'];
-        //     $data=array(
-        //         'cart_id'=>$cart_index,
-        //         'user_id'=>$request->user()->id,
-        //         'product_id'=>$cart_item['id'],
-        //         'quantity'=>$cart_item['quantity'],
-        //         'amount'=>$cart_item['amount'],
-        //         'status'=>'new',
-        //         'price'=>$cart_item['price'],
-        //     );
-
-        //     $cart=new Cart();
-        //     $cart->fill($data);
-        //     $cart->save();
-        // }
-
-        // $total_prod=0;
-        // if(session('cart')){
-        //         foreach(session('cart') as $cart_items){
-        //             $total_prod+=$cart_items['quantity'];
-        //         }
-        // }
 
         $order=new Order();
         $order_data=$request->all();
@@ -118,21 +93,26 @@ class OrderController extends Controller
         }
         // return $order_data['total_amount'];
         $order_data['status']="new";
-        if(request('payment_method')=='paypal'){
-            $order_data['payment_method']='paypal';
+        if(request('payment_method')=='vnpay'){
+            $order_data['return'] = true;
+            $order_data['payment_method']='vnpay';
             $order_data['payment_status']='paid';
+            return $this->vnpay_payment($order_data);
         }
         else{
             $order_data['payment_method']='cod';
             $order_data['payment_status']='Unpaid';
         }
+
+
+
         $order->fill($order_data);
         $status=$order->save();
         if($order)
         // dd($order->id);
         $users=User::where('role','admin')->first();
         $details=[
-            'title'=>'New order created',
+            'title'=>'Có đơn hàng mới',
             'actionURL'=>route('order.show',$order->id),
             'fas'=>'fa-file-alt'
         ];
@@ -146,8 +126,8 @@ class OrderController extends Controller
         }
         Cart::where('user_id', auth()->user()->id)->where('order_id', null)->update(['order_id' => $order->id]);
 
-        // dd($users);        
-        request()->session()->flash('success','Your product successfully placed in order');
+        // dd($users);
+        request()->session()->flash('success','Bạn đã đặt hàng thành công');
         return redirect()->route('home');
     }
 
@@ -160,8 +140,9 @@ class OrderController extends Controller
     public function show($id)
     {
         $order=Order::find($id);
+        $carts = Cart::where('order_id', $id)->get();
         // return $order;
-        return view('backend.order.show')->with('order',$order);
+        return view('backend.order.show')->with(['order' => $order, 'carts' => $carts]);
     }
 
     /**
@@ -201,10 +182,10 @@ class OrderController extends Controller
         }
         $status=$order->fill($data)->save();
         if($status){
-            request()->session()->flash('success','Successfully updated order');
+            request()->session()->flash('success','Cập nhật đơn hàng thành công');
         }
         else{
-            request()->session()->flash('error','Error while updating order');
+            request()->session()->flash('error','Có lỗi khi cập nhật đơn hàng');
         }
         return redirect()->route('order.index');
     }
@@ -221,15 +202,15 @@ class OrderController extends Controller
         if($order){
             $status=$order->delete();
             if($status){
-                request()->session()->flash('success','Order Successfully deleted');
+                request()->session()->flash('success','Xóa đơn hàng thành công');
             }
             else{
-                request()->session()->flash('error','Order can not deleted');
+                request()->session()->flash('error','Đơn hàng không thể xóa');
             }
             return redirect()->route('order.index');
         }
         else{
-            request()->session()->flash('error','Order can not found');
+            request()->session()->flash('error','Không tìm thấy đơn hàng');
             return redirect()->back();
         }
     }
@@ -243,28 +224,28 @@ class OrderController extends Controller
         $order=Order::where('user_id',auth()->user()->id)->where('order_number',$request->order_number)->first();
         if($order){
             if($order->status=="new"){
-            request()->session()->flash('success','Your order has been placed. please wait.');
-            return redirect()->route('home');
+            request()->session()->flash('success','Đơn hàng của bạn đã được đặt. Vui lòng chờ.');
+            return redirect()->route('order.track');
 
             }
             elseif($order->status=="process"){
-                request()->session()->flash('success','Your order is under processing please wait.');
-                return redirect()->route('home');
-    
+                request()->session()->flash('success','Đơn hàng của bạn đang được xử lý. Vui lòng chờ.');
+                return redirect()->route('order.track');
+
             }
             elseif($order->status=="delivered"){
-                request()->session()->flash('success','Your order is successfully delivered.');
-                return redirect()->route('home');
-    
+                request()->session()->flash('success','Đơn hàng của bạn đã được giao. Xin chân thành cảm ơn.');
+                return redirect()->route('order.track');
+
             }
             else{
-                request()->session()->flash('error','Your order canceled. please try again');
-                return redirect()->route('home');
-    
+                request()->session()->flash('error','Đơn hàng của bạn đã bị hủy, vui lòng thử lại.');
+                return redirect()->route('order.track');
+
             }
         }
         else{
-            request()->session()->flash('error','Invalid order numer please try again');
+            request()->session()->flash('error','Mã đơn hàng không hợp lệ, vui lòng thử lại.');
             return back();
         }
     }
@@ -303,5 +284,133 @@ class OrderController extends Controller
             $data[$monthName] = (!empty($result[$i]))? number_format((float)($result[$i]), 2, '.', '') : 0.0;
         }
         return $data;
+    }
+
+    // Income chart quarterly
+    public function incomeChartQuarterly(Request $request){
+        $year=\Carbon\Carbon::now()->year;
+        $quarter=\Carbon\Carbon::quartersUntil($endDate = null, $factor = 1);
+        // dd($year);
+        $items=Order::with(['cart_info'])->whereMonth('created_at',$quarter)->where('status','delivered')->get()
+            ->groupBy(function($d){
+                return \Carbon\Carbon::parse($d->created_at)->format('m');
+            });
+        // dd($items);
+        $result=[];
+        foreach($items as $month=>$item_collections){
+            foreach($item_collections as $item){
+                $amount=$item->cart_info->sum('amount');
+                // dd($amount);
+                $m=intval($month);
+                // return $m;
+                isset($result[$m]) ? $result[$m] += $amount :$result[$m]=$amount;
+            }
+        }
+        $data=[];
+        for($i=1; $i <=4; $i++){
+            $monthName=date('n', mktime(0,0,0,$i,1));
+            $data[$monthName] = (!empty($result[$i]))? number_format((float)($result[$i]), 2, '.', '') : 0.0;
+        }
+        return $data;
+    }
+
+    public function vnpay_payment($order_data){
+        $vnp_Url = "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html";
+        $vnp_Returnurl = 'https://dev.tamboutique.pro/vnpay/store';
+        $vnp_TmnCode = "IX5YIDNB";//Mã website tại VNPAY
+        $vnp_HashSecret = "CABSVVOPZOPABQDEWDDDXZMUUVTJIWPC"; //Chuỗi bí mật
+
+        $vnp_TxnRef = $order_data['order_number']; //Mã đơn hàng. Trong thực tế Merchant cần insert đơn hàng vào DB và gửi mã này sang VNPAY
+        $vnp_OrderInfo = 'Thanh toán đơn hàng test';
+        $vnp_OrderType = 'billpayment';
+        $vnp_Amount = $order_data['total_amount'] * 100;
+        $vnp_Locale = 'VN';
+        $vnp_BankCode = 'NCB';
+        $vnp_IpAddr = $_SERVER['REMOTE_ADDR'];
+//Add Params of 2.0.1 Version
+//        $vnp_ExpireDate = $_POST['txtexpire'];
+//Billing
+        $inputData = array(
+            "vnp_Version" => "2.1.0",
+            "vnp_TmnCode" => $vnp_TmnCode,
+            "vnp_Amount" => $vnp_Amount,
+            "vnp_Command" => "pay",
+            "vnp_CreateDate" => date('YmdHis'),
+            "vnp_CurrCode" => "VND",
+            "vnp_IpAddr" => $vnp_IpAddr,
+            "vnp_Locale" => $vnp_Locale,
+            "vnp_OrderInfo" => $vnp_OrderInfo,
+            "vnp_OrderType" => $vnp_OrderType,
+            "vnp_ReturnUrl" => $vnp_Returnurl,
+            "vnp_TxnRef" => $vnp_TxnRef,
+        );
+
+        if (isset($vnp_BankCode) && $vnp_BankCode != "") {
+            $inputData['vnp_BankCode'] = $vnp_BankCode;
+        }
+        if (isset($vnp_Bill_State) && $vnp_Bill_State != "") {
+            $inputData['vnp_Bill_State'] = $vnp_Bill_State;
+        }
+
+//var_dump($inputData);
+        ksort($inputData);
+        $query = "";
+        $i = 0;
+        $hashdata = "";
+        foreach ($inputData as $key => $value) {
+            if ($i == 1) {
+                $hashdata .= '&' . urlencode($key) . "=" . urlencode($value);
+            } else {
+                $hashdata .= urlencode($key) . "=" . urlencode($value);
+                $i = 1;
+            }
+            $query .= urlencode($key) . "=" . urlencode($value) . '&';
+        }
+
+        $vnp_Url = $vnp_Url . "?" . $query;
+        if (isset($vnp_HashSecret)) {
+            $vnpSecureHash =   hash_hmac('sha512', $hashdata, $vnp_HashSecret);//
+            $vnp_Url .= 'vnp_SecureHash=' . $vnpSecureHash;
+        }
+        $returnData = array('code' => '00'
+        , 'message' => 'success'
+        , 'data' => $vnp_Url);
+        if (isset($order_data['return'])) {
+            $_SESSION['order_data'] = $order_data;
+            header('Location: ' . $vnp_Url);
+            die();
+        } else {
+            echo json_encode($returnData);
+        }
+        // vui lòng tham khảo thêm tại code demo
+    }
+
+    public function store(Request $request){
+        $order=new Order();
+        $order_data=$_SESSION['order_data'];
+//        dd($order_data);
+        $order->fill($order_data);
+        $status=$order->save();
+        if($order)
+            // dd($order->id);
+            $users=User::where('role','admin')->first();
+        $details=[
+            'title'=>'Có đơn hàng mới',
+            'actionURL'=>route('order.show',$order->id),
+            'fas'=>'fa-file-alt'
+        ];
+        \Illuminate\Support\Facades\Notification::send($users, new StatusNotification($details));
+        if(request('payment_method')=='paypal'){
+            return redirect()->route('payment')->with(['id'=>$order->id]);
+        }
+        else{
+            session()->forget('cart');
+            session()->forget('coupon');
+        }
+        Cart::where('user_id', auth()->user()->id)->where('order_id', null)->update(['order_id' => $order->id]);
+
+        // dd($users);
+        request()->session()->flash('success','Bạn đã đặt hàng thành công');
+        return redirect()->route('home');
     }
 }
